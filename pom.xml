@@ -14,7 +14,7 @@
 
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1</version><!-- патч-фикс -->
     <packaging>jar</packaging>
 
     <name>MoyNalog Client</name>
@@ -155,8 +155,10 @@
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>3.2.7</version>
                 <configuration>
+                    <executable>C:\Program Files\Git\usr\bin\gpg.exe</executable>
                     <!-- Отпечаток ключа 990F60065065D719DDC71F92A559F12EB8553B08 -->
                     <keyname>990F60065065D719DDC71F92A559F12EB8553B08</keyname>
+                    <passphraseServerId>gpg.passphrase</passphraseServerId>
                     <gpgArguments>
                         <arg>--pinentry-mode</arg>
                         <arg>loopback</arg>
