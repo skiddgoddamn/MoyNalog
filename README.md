@@ -62,8 +62,8 @@ public class TaxService {
 
     public Receipt registerIncome() {
         return moyNalogClient.addIncome(List.of(
-            new Service("Консультация", 1, 5000.0),
-            new Service("Разработка", 3, 10000.0)
+            new IncomeItem("Консультация", 1, 5000.0),
+            new IncomeItem("Разработка", 3, 10000.0)
         ));
     }
 }
@@ -105,9 +105,9 @@ System.out.println("Авторизован: " + profile.getInn());
 ### Синхронно
 
 ```java
-List<Service> services = List.of(
-    new Service("Консультация", 1, 3000.0),   // 1 × 3000 = 3000 руб.
-    new Service("Обучение",     2, 1500.0)    // 2 × 1500 = 3000 руб.
+List<IncomeItem> services = List.of(
+    new IncomeItem("Консультация", 1, 3000.0),   // 1 × 3000 = 3000 руб.
+    new IncomeItem("Обучение",     2, 1500.0)    // 2 × 1500 = 3000 руб.
 );
 
 Receipt receipt = client.addIncome(services);
@@ -130,7 +130,7 @@ future.thenAccept(receipt -> System.out.println("Чек зарегистриро
 
 ## Модель данных
 
-### `Service` — услуга в чеке
+### `IncomeItem` — позиция в чеке
 
 | Поле | Тип | Описание |
 |---|---|---|

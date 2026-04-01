@@ -11,8 +11,8 @@ import ru.zaytsv.dto.AuthenticationDTO;
 import ru.zaytsv.dto.RefreshTokenDTO;
 import ru.zaytsv.exception.ApiException;
 import ru.zaytsv.exception.ApiRequestException;
-import ru.zaytsv.pojo.Receipt;
-import ru.zaytsv.pojo.Service;
+import ru.zaytsv.model.IncomeItem;
+import ru.zaytsv.model.Receipt;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -123,7 +123,7 @@ public class MoyNalogClient {
      * @return {@link CompletableFuture} с результирующей квитанцией
      * @see #addIncome(List)
      */
-    public CompletableFuture<Receipt> addIncomeAsync(List<Service> services) {
+    public CompletableFuture<Receipt> addIncomeAsync(List<IncomeItem> services) {
         return CompletableFuture.supplyAsync(() -> addIncome(services));
     }
 
@@ -138,7 +138,7 @@ public class MoyNalogClient {
      * @throws IllegalStateException если клиент не был инициализирован через {@link #init}
      * @throws ApiRequestException   если сервер вернул код ответа, отличный от 200
      */
-    public Receipt addIncome(List<Service> services) {
+    public Receipt addIncome(List<IncomeItem> services) {
         checkToken();
 
         String operationTime = OffsetDateTime.now()
@@ -158,7 +158,7 @@ public class MoyNalogClient {
 
         ArrayNode servicesNode = payload.putArray("services");
         double totalAmount = 0;
-        for (Service service : services) {
+        for (IncomeItem service : services) {
             double serviceTotalAmount = service.quantity() * service.amount();
             ObjectNode serviceNode = servicesNode.addObject();
             serviceNode.put("name", service.name());

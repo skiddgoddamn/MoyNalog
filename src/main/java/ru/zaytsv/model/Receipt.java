@@ -1,4 +1,4 @@
-package ru.zaytsv.pojo;
+package ru.zaytsv.model;
 
 /**
  * Квитанция, подтверждающая успешную регистрацию чека в ФНС.
