@@ -14,7 +14,7 @@
 
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.0.1</version><!-- патч-фикс -->
+    <version>1.1.2</version><!-- таймаут запроса + retry auth + убран HTTP/1.1 -->
     <packaging>jar</packaging>
 
     <name>MoyNalog Client</name>

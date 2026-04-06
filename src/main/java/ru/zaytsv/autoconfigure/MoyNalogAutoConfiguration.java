@@ -41,6 +41,12 @@ public class MoyNalogAutoConfiguration {
         config.setPrefix(properties.getPrefix());
         config.setApiPath(properties.getApiPath());
         config.setZoneOffset(properties.getZoneOffset());
+        MoyNalogProperties.Proxy proxy = properties.getProxy();
+        config.setRequestTimeout(properties.getRequestTimeout());
+        config.setProxyHost(proxy.getHost());
+        config.setProxyPort(proxy.getPort());
+        config.setProxyUsername(proxy.getUsername());
+        config.setProxyPassword(proxy.getPassword());
 
         MoyNalogClient client = new MoyNalogClient(config);
         client.init(properties.getUsername(), properties.getPassword());

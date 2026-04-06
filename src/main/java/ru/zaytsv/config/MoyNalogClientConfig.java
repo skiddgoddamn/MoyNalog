@@ -16,6 +16,8 @@ import lombok.Setter;
  * <pre>{@code
  * MoyNalogClientConfig config = new MoyNalogClientConfig();
  * config.setZoneOffset("+03:00");
+ * config.setProxyHost("proxy.example.com");
+ * config.setProxyPort(8080);
  * MoyNalogClient client = new MoyNalogClient(config);
  * }</pre>
  */
@@ -42,4 +44,22 @@ public class MoyNalogClientConfig {
     /** Название HTTP-заголовка Referer. Изменять не требуется. */
     @NonNull
     private String refererHeader = "Referer";
+
+    /**
+     * Таймаут ожидания ответа от сервера (секунды).
+     * Применяется к каждому HTTP-запросу. По умолчанию 30 секунд.
+     */
+    private int requestTimeout = 30;
+
+    /** Хост прокси-сервера. Если {@code null} или пустой — прокси не используется. */
+    private String proxyHost;
+
+    /** Порт прокси-сервера. По умолчанию 8080. */
+    private int proxyPort = 8080;
+
+    /** Логин для аутентификации на прокси. Необязателен. */
+    private String proxyUsername;
+
+    /** Пароль для аутентификации на прокси. Необязателен. */
+    private String proxyPassword;
 }

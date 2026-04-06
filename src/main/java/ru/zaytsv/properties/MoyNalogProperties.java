@@ -12,6 +12,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * moy-nalog.username=ваш_логин
  * moy-nalog.password=ваш_пароль
  * moy-nalog.zone-offset=+03:00
+ * moy-nalog.proxy.host=proxy.example.com
+ * moy-nalog.proxy.port=8080
+ * moy-nalog.proxy.username=proxyuser
+ * moy-nalog.proxy.password=proxypass
  * </pre>
  */
 @Getter
@@ -42,4 +46,26 @@ public class MoyNalogProperties {
      * По умолчанию UTC.
      */
     private String zoneOffset = "Z";
+
+    /**
+     * Таймаут ожидания ответа от сервера (секунды).
+     * По умолчанию 30 секунд.
+     */
+    private int requestTimeout = 30;
+
+    /** Настройки прокси-сервера. Если {@code host} не задан — прокси не используется. */
+    private Proxy proxy = new Proxy();
+
+    @Getter
+    @Setter
+    public static class Proxy {
+        /** Хост прокси-сервера. */
+        private String host;
+        /** Порт прокси-сервера. По умолчанию 8080. */
+        private int port = 8080;
+        /** Логин для аутентификации на прокси. Необязателен. */
+        private String username;
+        /** Пароль для аутентификации на прокси. Необязателен. */
+        private String password;
+    }
 }

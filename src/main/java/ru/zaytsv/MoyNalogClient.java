@@ -1,5 +1,6 @@
 package ru.zaytsv;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -11,12 +12,19 @@ import ru.zaytsv.dto.AuthenticationDTO;
 import ru.zaytsv.dto.RefreshTokenDTO;
 import ru.zaytsv.exception.ApiException;
 import ru.zaytsv.exception.ApiRequestException;
+import ru.zaytsv.model.ClientType;
 import ru.zaytsv.model.IncomeItem;
+import ru.zaytsv.model.Invoice;
+import ru.zaytsv.model.PaymentType;
 import ru.zaytsv.model.Receipt;
 
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.net.Authenticator;
+import java.net.InetSocketAddress;
+import java.net.PasswordAuthentication;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -28,6 +36,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -59,10 +68,7 @@ public class MoyNalogClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .version(HttpClient.Version.HTTP_1_1)
-            .connectTimeout(Duration.ofSeconds(4))
-            .build();
+    private final HttpClient httpClient;
 
     private final ReadWriteLock refreshTokenLock = new ReentrantReadWriteLock(true);
 
@@ -93,6 +99,30 @@ public class MoyNalogClient {
     public MoyNalogClient(MoyNalogClientConfig clientConfig) {
         this.clientConfig = clientConfig;
         this.deviceId = generateDeviceId(this.clientConfig.getPrefix());
+        this.httpClient = buildHttpClient();
+    }
+
+    private HttpClient buildHttpClient() {
+        HttpClient.Builder builder = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10));
+
+        String proxyHost = clientConfig.getProxyHost();
+        if (proxyHost != null && !proxyHost.isEmpty()) {
+            builder.proxy(ProxySelector.of(new InetSocketAddress(proxyHost, clientConfig.getProxyPort())));
+            String proxyUsername = clientConfig.getProxyUsername();
+            if (proxyUsername != null && !proxyUsername.isEmpty()) {
+                String proxyPassword = clientConfig.getProxyPassword();
+                builder.authenticator(new Authenticator() {
+                    @Override
+                    protected PasswordAuthentication getPasswordAuthentication() {
+                        return new PasswordAuthentication(proxyUsername,
+                                proxyPassword != null ? proxyPassword.toCharArray() : new char[0]);
+                    }
+                });
+            }
+        }
+
+        return builder.build();
     }
 
     /**
@@ -168,7 +198,7 @@ public class MoyNalogClient {
         }
         payload.put("totalAmount", BigDecimal.valueOf(totalAmount).setScale(2, RoundingMode.HALF_UP));
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest request = requestBuilder()
                 .uri(URI.create(clientConfig.getApiPath() + "/income"))
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
                 .headers(getCommonHeaders())
@@ -198,33 +228,168 @@ public class MoyNalogClient {
         }
     }
 
+    /**
+     * Возвращает список сохранённых реквизитов (способов оплаты) из личного кабинета.
+     *
+     * <p>Используется для получения банковских реквизитов перед выставлением счёта.</p>
+     *
+     * @param favoriteOnly {@code true} — только избранные реквизиты
+     * @return список реквизитов
+     * @throws IllegalStateException если клиент не был инициализирован
+     * @throws ApiRequestException   если сервер вернул код ответа, отличный от 200
+     */
+    public List<PaymentType> getPaymentTypes(boolean favoriteOnly) {
+        checkToken();
+
+        String url = clientConfig.getApiPath() + "/payment-type/table" + (favoriteOnly ? "?favorite=true" : "");
+        HttpRequest request = requestBuilder()
+                .uri(URI.create(url))
+                .GET()
+                .headers(getCommonHeaders())
+                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales/create")
+                .header("Authorization", "Bearer " + token)
+                .build();
+
+        refreshTokenLock.readLock().lock();
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            int statusCode = response.statusCode();
+            String body = response.body();
+            if (statusCode != 200) {
+                throw new ApiRequestException("ошибка получения реквизитов", statusCode, body);
+            }
+            JsonNode root = MAPPER.readTree(body);
+            JsonNode items = root.path("items");
+            List<PaymentType> result = new ArrayList<>();
+            for (JsonNode item : items) {
+                result.add(MAPPER.treeToValue(item, PaymentType.class));
+            }
+            return result;
+        } catch (IOException e) {
+            throw new ApiException(e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(e.getMessage());
+        } finally {
+            refreshTokenLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Выставляет счёт через API сервиса «Мой налог».
+     *
+     * <p>Пример использования:</p>
+     * <pre>{@code
+     * List<PaymentType> types = client.getPaymentTypes(true);
+     * PaymentType account = types.get(0);
+     * Invoice invoice = client.createInvoice(
+     *     account,
+     *     "ИП Иванов Иван Иванович", "123456789012", ClientType.FROM_LEGAL_ENTITY,
+     *     List.of(new IncomeItem("Консультация", 1, 5000.0))
+     * );
+     * System.out.println(invoice.getTransitionPageURL());
+     * }</pre>
+     *
+     * @param paymentType реквизиты оплаты (полученные через {@link #getPaymentTypes})
+     * @param clientName  наименование плательщика
+     * @param clientInn   ИНН плательщика
+     * @param clientType  тип плательщика
+     * @param services    список услуг
+     * @return выставленный счёт
+     * @throws IllegalStateException если клиент не был инициализирован
+     * @throws ApiRequestException   если сервер вернул код ответа, отличный от 200
+     */
+    public Invoice createInvoice(PaymentType paymentType,
+                                 String clientName, String clientInn, ClientType clientType,
+                                 List<IncomeItem> services) {
+        checkToken();
+
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("paymentType", paymentType.getType());
+        payload.put("bankName", paymentType.getBankName());
+        payload.put("bankBik", paymentType.getBankBik());
+        payload.put("corrAccount", paymentType.getCorrAccount());
+        payload.put("currentAccount", paymentType.getCurrentAccount());
+        payload.put("clientName", clientName);
+        payload.put("clientInn", clientInn);
+        payload.put("type", "MANUAL");
+        payload.put("clientType", clientType.getValue());
+
+        ArrayNode servicesNode = payload.putArray("services");
+        double totalAmount = 0;
+        for (int i = 0; i < services.size(); i++) {
+            IncomeItem item = services.get(i);
+            double itemTotal = item.quantity() * item.amount();
+            ObjectNode serviceNode = servicesNode.addObject();
+            serviceNode.put("name", item.name());
+            serviceNode.put("amount", BigDecimal.valueOf(item.amount()).setScale(2, RoundingMode.HALF_UP));
+            serviceNode.put("quantity", item.quantity());
+            serviceNode.put("serviceNumber", i);
+            totalAmount += itemTotal;
+        }
+        payload.put("totalAmount", BigDecimal.valueOf(totalAmount).setScale(2, RoundingMode.HALF_UP).toPlainString());
+
+        HttpRequest request = requestBuilder()
+                .uri(URI.create(clientConfig.getApiPath() + "/invoice"))
+                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+                .headers(getCommonHeaders())
+                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales/create")
+                .header("Authorization", "Bearer " + token)
+                .build();
+
+        refreshTokenLock.readLock().lock();
+        try {
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            int statusCode = response.statusCode();
+            String body = response.body();
+            if (statusCode != 200) {
+                throw new ApiRequestException("ошибка создания счёта", statusCode, body);
+            }
+            return MAPPER.readValue(body, Invoice.class);
+        } catch (IOException e) {
+            throw new ApiException(e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ApiException(e.getMessage());
+        } finally {
+            refreshTokenLock.readLock().unlock();
+        }
+    }
+
     private AuthenticationDTO authenticate(String username, String password) {
         ObjectNode payload = MAPPER.createObjectNode();
         payload.put("username", username);
         payload.put("password", password);
         payload.set("deviceInfo", getDeviceInfo(deviceId));
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest request = requestBuilder()
                 .uri(URI.create(clientConfig.getApiPath() + "/auth/lkfl"))
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
                 .headers(getCommonHeaders())
                 .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/auth/login")
                 .build();
 
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            int statusCode = response.statusCode();
-            String body = response.body();
-            if (statusCode != 200) {
-                throw new ApiRequestException("ошибка аутентификации", statusCode, body);
+        IOException lastException = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                int statusCode = response.statusCode();
+                String body = response.body();
+                if (statusCode != 200) {
+                    throw new ApiRequestException("ошибка аутентификации", statusCode, body);
+                }
+                return MAPPER.readValue(body, AuthenticationDTO.class);
+            } catch (ApiRequestException e) {
+                throw e;
+            } catch (IOException e) {
+                lastException = e;
+                log.warn("Попытка аутентификации {} не удалась: {}", attempt + 1, e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ApiException(e.getMessage());
             }
-            return MAPPER.readValue(body, AuthenticationDTO.class);
-        } catch (IOException e) {
-            throw new ApiException(e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ApiException(e.getMessage());
         }
+        throw new ApiException(lastException.getMessage());
     }
 
     private RefreshTokenDTO refreshToken() {
@@ -232,7 +397,7 @@ public class MoyNalogClient {
         payload.set("deviceInfo", getDeviceInfo(deviceId));
         payload.put("refreshToken", refreshToken);
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest request = requestBuilder()
                 .uri(URI.create(clientConfig.getApiPath() + "/auth/token"))
                 .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
                 .headers(getCommonHeaders())
@@ -296,6 +461,11 @@ public class MoyNalogClient {
         ObjectNode metaDetailsNode = deviceInfoNode.putObject("metaDetails");
         metaDetailsNode.put("userAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0");
         return deviceInfoNode;
+    }
+
+    private HttpRequest.Builder requestBuilder() {
+        return HttpRequest.newBuilder()
+                .timeout(Duration.ofSeconds(clientConfig.getRequestTimeout()));
     }
 
     private String[] getCommonHeaders() {
