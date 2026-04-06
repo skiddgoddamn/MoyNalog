@@ -33,7 +33,7 @@ mvn install
 <dependency>
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.1.2</version>
+    <version>1.1.3</version>
 </dependency>
 ```
 
@@ -289,7 +289,7 @@ try {
 
 ## Changelog
 
-### 1.1.2
+### 1.1.3
 - Убрана принудительная фиксация `HTTP/1.1` — клиент теперь автоматически согласует протокол (HTTP/1.1 / HTTP/2) через TLS ALPN
 - Добавлен настраиваемый таймаут ответа (`moy-nalog.request-timeout`, по умолчанию 30 сек)
 - Добавлен автоматический retry при аутентификации в случае transient сетевой ошибки
