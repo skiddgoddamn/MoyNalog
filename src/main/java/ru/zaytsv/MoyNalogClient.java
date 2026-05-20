@@ -5,6 +5,20 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.Getter;
+import org.apache.hc.client5.http.auth.AuthScope;
+import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.client5.http.classic.methods.HttpUriRequestBase;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.zaytsv.config.MoyNalogClientConfig;
@@ -21,17 +35,7 @@ import ru.zaytsv.model.Receipt;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.net.Authenticator;
-import java.net.InetSocketAddress;
-import java.net.PasswordAuthentication;
-import java.net.ProxySelector;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -49,11 +53,22 @@ import java.util.stream.IntStream;
  * <p>Поддерживает аутентификацию по логину и паролю, автоматическое обновление
  * токена, синхронную и асинхронную отправку чеков.</p>
  *
+ * <p>Под капотом — Apache HttpClient5. Раньше использовался {@code java.net.http.HttpClient}
+ * с установленным {@link java.net.Authenticator} (для proxy CONNECT). JDK после этого
+ * добавлял {@code AuthenticationFilter}, который на ЛЮБОЙ 401-ответ (включая ответы
+ * от target-сервера, не только от прокси) строго требовал заголовок {@code WWW-Authenticate}
+ * и при его отсутствии бросал синтетическое {@code IOException("WWW-Authenticate header
+ * missing for response code 401")}. Реальное тело ошибки от nalog.ru при этом терялось,
+ * клиент думал что токен протух, и крутил бесполезные reinit'ы. Apache HttpClient5
+ * различает proxy/target через {@code AuthScope} и спокойно возвращает 401 от target
+ * как обычный response с body — реальная причина отказа от ФНС видна в
+ * {@link ApiRequestException#getBody()}.</p>
+ *
  * <p>Пример использования без Spring:</p>
  * <pre>{@code
  * MoyNalogClient client = new MoyNalogClient();
  * client.init("username", "password");
- * Receipt receipt = client.addIncome(List.of(new Service("Консультация", 1, 5000.0)));
+ * Receipt receipt = client.addIncome(List.of(new IncomeItem("Консультация", 1, 5000.0)));
  * }</pre>
  *
  * <p>При использовании Spring Boot достаточно добавить в {@code application.properties}:</p>
@@ -68,7 +83,7 @@ public class MoyNalogClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final HttpClient httpClient;
+    private final CloseableHttpClient httpClient;
 
     private final ReadWriteLock refreshTokenLock = new ReentrantReadWriteLock(true);
 
@@ -102,26 +117,32 @@ public class MoyNalogClient {
         this.httpClient = buildHttpClient();
     }
 
-    private HttpClient buildHttpClient() {
-        HttpClient.Builder builder = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10));
+    private CloseableHttpClient buildHttpClient() {
+        var builder = HttpClients.custom()
+                .setDefaultRequestConfig(RequestConfig.custom()
+                        .setConnectionRequestTimeout(Timeout.ofSeconds(15))
+                        .setResponseTimeout(Timeout.ofSeconds(Math.max(15, clientConfig.getRequestTimeout())))
+                        .build());
 
         String proxyHost = clientConfig.getProxyHost();
         if (proxyHost != null && !proxyHost.isEmpty()) {
-            builder.proxy(ProxySelector.of(new InetSocketAddress(proxyHost, clientConfig.getProxyPort())));
+            HttpHost proxy = new HttpHost("http", proxyHost, clientConfig.getProxyPort());
+            builder.setProxy(proxy);
+
             String proxyUsername = clientConfig.getProxyUsername();
             if (proxyUsername != null && !proxyUsername.isEmpty()) {
                 String proxyPassword = clientConfig.getProxyPassword();
-                builder.authenticator(new Authenticator() {
-                    @Override
-                    protected PasswordAuthentication getPasswordAuthentication() {
-                        return new PasswordAuthentication(proxyUsername,
-                                proxyPassword != null ? proxyPassword.toCharArray() : new char[0]);
-                    }
-                });
+                BasicCredentialsProvider creds = new BasicCredentialsProvider();
+                // AuthScope, привязанный к HttpHost прокси, — Apache не будет использовать
+                // эти учётки для target-сервера; для CONNECT-туннеля сам пошлёт Proxy-Authorization.
+                creds.setCredentials(
+                        new AuthScope(proxy),
+                        new UsernamePasswordCredentials(proxyUsername,
+                                proxyPassword == null ? new char[0] : proxyPassword.toCharArray())
+                );
+                builder.setDefaultCredentialsProvider(creds);
             }
         }
-
         return builder.build();
     }
 
@@ -198,30 +219,18 @@ public class MoyNalogClient {
         }
         payload.put("totalAmount", BigDecimal.valueOf(totalAmount).setScale(2, RoundingMode.HALF_UP));
 
-        HttpRequest request = requestBuilder()
-                .uri(URI.create(clientConfig.getApiPath() + "/income"))
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-                .headers(getCommonHeaders())
-                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales/create")
-                .header("Authorization", "Bearer " + token)
-                .build();
+        HttpPost req = new HttpPost(clientConfig.getApiPath() + "/income");
+        req.setEntity(new StringEntity(payload.toString(), ContentType.APPLICATION_JSON));
+        applyCommonHeaders(req, "https://lknpd.nalog.ru/sales/create");
 
         refreshTokenLock.readLock().lock();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            int statusCode = response.statusCode();
-            String body = response.body();
-            if (statusCode != 200) {
-                throw new ApiRequestException("ошибка отправки чека", statusCode, body);
-            }
-            String approvedReceiptUuid = MAPPER.readTree(body).path("approvedReceiptUuid").asText();
+            HttpExchange resp = execute(req, "ошибка отправки чека");
+            String approvedReceiptUuid = MAPPER.readTree(resp.body).path("approvedReceiptUuid").asText();
             final String jsonUrl = String.format("%s/receipt/%s/%s/json", clientConfig.getApiPath(), inn, approvedReceiptUuid);
             final String printUrl = String.format("%s/receipt/%s/%s/print", clientConfig.getApiPath(), inn, approvedReceiptUuid);
             return new Receipt(approvedReceiptUuid, jsonUrl, printUrl);
         } catch (IOException e) {
-            throw new ApiException(e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
             throw new ApiException(e.getMessage());
         } finally {
             refreshTokenLock.readLock().unlock();
@@ -242,23 +251,13 @@ public class MoyNalogClient {
         checkToken();
 
         String url = clientConfig.getApiPath() + "/payment-type/table" + (favoriteOnly ? "?favorite=true" : "");
-        HttpRequest request = requestBuilder()
-                .uri(URI.create(url))
-                .GET()
-                .headers(getCommonHeaders())
-                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales/create")
-                .header("Authorization", "Bearer " + token)
-                .build();
+        HttpGet req = new HttpGet(url);
+        applyCommonHeaders(req, "https://lknpd.nalog.ru/sales/create");
 
         refreshTokenLock.readLock().lock();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            int statusCode = response.statusCode();
-            String body = response.body();
-            if (statusCode != 200) {
-                throw new ApiRequestException("ошибка получения реквизитов", statusCode, body);
-            }
-            JsonNode root = MAPPER.readTree(body);
+            HttpExchange resp = execute(req, "ошибка получения реквизитов");
+            JsonNode root = MAPPER.readTree(resp.body);
             JsonNode items = root.path("items");
             List<PaymentType> result = new ArrayList<>();
             for (JsonNode item : items) {
@@ -266,9 +265,6 @@ public class MoyNalogClient {
             }
             return result;
         } catch (IOException e) {
-            throw new ApiException(e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
             throw new ApiException(e.getMessage());
         } finally {
             refreshTokenLock.readLock().unlock();
@@ -329,27 +325,15 @@ public class MoyNalogClient {
         }
         payload.put("totalAmount", BigDecimal.valueOf(totalAmount).setScale(2, RoundingMode.HALF_UP).toPlainString());
 
-        HttpRequest request = requestBuilder()
-                .uri(URI.create(clientConfig.getApiPath() + "/invoice"))
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-                .headers(getCommonHeaders())
-                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales/create")
-                .header("Authorization", "Bearer " + token)
-                .build();
+        HttpPost req = new HttpPost(clientConfig.getApiPath() + "/invoice");
+        req.setEntity(new StringEntity(payload.toString(), ContentType.APPLICATION_JSON));
+        applyCommonHeaders(req, "https://lknpd.nalog.ru/sales/create");
 
         refreshTokenLock.readLock().lock();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            int statusCode = response.statusCode();
-            String body = response.body();
-            if (statusCode != 200) {
-                throw new ApiRequestException("ошибка создания счёта", statusCode, body);
-            }
-            return MAPPER.readValue(body, Invoice.class);
+            HttpExchange resp = execute(req, "ошибка создания счёта");
+            return MAPPER.readValue(resp.body, Invoice.class);
         } catch (IOException e) {
-            throw new ApiException(e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
             throw new ApiException(e.getMessage());
         } finally {
             refreshTokenLock.readLock().unlock();
@@ -362,34 +346,23 @@ public class MoyNalogClient {
         payload.put("password", password);
         payload.set("deviceInfo", getDeviceInfo(deviceId));
 
-        HttpRequest request = requestBuilder()
-                .uri(URI.create(clientConfig.getApiPath() + "/auth/lkfl"))
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-                .headers(getCommonHeaders())
-                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/auth/login")
-                .build();
-
         IOException lastException = null;
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-                int statusCode = response.statusCode();
-                String body = response.body();
-                if (statusCode != 200) {
-                    throw new ApiRequestException("ошибка аутентификации", statusCode, body);
-                }
-                return MAPPER.readValue(body, AuthenticationDTO.class);
+                HttpPost req = new HttpPost(clientConfig.getApiPath() + "/auth/lkfl");
+                req.setEntity(new StringEntity(payload.toString(), ContentType.APPLICATION_JSON));
+                applyCommonHeadersNoBearer(req, "https://lknpd.nalog.ru/auth/login");
+
+                HttpExchange resp = execute(req, "ошибка аутентификации");
+                return MAPPER.readValue(resp.body, AuthenticationDTO.class);
             } catch (ApiRequestException e) {
                 throw e;
             } catch (IOException e) {
                 lastException = e;
                 log.warn("Попытка аутентификации {} не удалась: {}", attempt + 1, e.getMessage());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new ApiException(e.getMessage());
             }
         }
-        throw new ApiException(lastException.getMessage());
+        throw new ApiException(lastException == null ? "unknown auth error" : lastException.getMessage());
     }
 
     private RefreshTokenDTO refreshToken() {
@@ -397,25 +370,14 @@ public class MoyNalogClient {
         payload.set("deviceInfo", getDeviceInfo(deviceId));
         payload.put("refreshToken", refreshToken);
 
-        HttpRequest request = requestBuilder()
-                .uri(URI.create(clientConfig.getApiPath() + "/auth/token"))
-                .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
-                .headers(getCommonHeaders())
-                .header(clientConfig.getRefererHeader(), "https://lknpd.nalog.ru/sales")
-                .build();
+        HttpPost req = new HttpPost(clientConfig.getApiPath() + "/auth/token");
+        req.setEntity(new StringEntity(payload.toString(), ContentType.APPLICATION_JSON));
+        applyCommonHeadersNoBearer(req, "https://lknpd.nalog.ru/sales");
 
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            int statusCode = response.statusCode();
-            String body = response.body();
-            if (statusCode != 200) {
-                throw new ApiRequestException("ошибка обновления токена", statusCode, body);
-            }
-            return MAPPER.readValue(body, RefreshTokenDTO.class);
+            HttpExchange resp = execute(req, "ошибка обновления токена");
+            return MAPPER.readValue(resp.body, RefreshTokenDTO.class);
         } catch (IOException e) {
-            throw new ApiException(e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
             throw new ApiException(e.getMessage());
         }
     }
@@ -463,16 +425,29 @@ public class MoyNalogClient {
         return deviceInfoNode;
     }
 
-    private HttpRequest.Builder requestBuilder() {
-        return HttpRequest.newBuilder()
-                .timeout(Duration.ofSeconds(clientConfig.getRequestTimeout()));
+    private void applyCommonHeaders(HttpUriRequestBase req, String referer) {
+        applyCommonHeadersNoBearer(req, referer);
+        req.setHeader("Authorization", "Bearer " + token);
     }
 
-    private String[] getCommonHeaders() {
-        return new String[]{
-                "Accept", "application/json, text/plain, */*",
-                "Accept-Language", "ru,en;q=0.9",
-                "Content-Type", "application/json"
-        };
+    private void applyCommonHeadersNoBearer(HttpUriRequestBase req, String referer) {
+        req.setHeader("Accept", "application/json, text/plain, */*");
+        req.setHeader("Accept-Language", "ru,en;q=0.9");
+        // Content-Type выставляется StringEntity для POST'ов; для GET — не нужен
+        req.setHeader(clientConfig.getRefererHeader(), referer);
     }
+
+    private HttpExchange execute(HttpUriRequestBase req, String errorMessage) throws IOException {
+        return httpClient.execute(req, resp -> {
+            int status = resp.getCode();
+            String body = resp.getEntity() != null ? EntityUtils.toString(resp.getEntity()) : "";
+            if (status != 200) {
+                throw new ApiRequestException(errorMessage, status, body);
+            }
+            return new HttpExchange(status, body);
+        });
+    }
+
+    /** Простой DTO для пары status+body, чтобы передать через лямбду {@link CloseableHttpClient#execute}. */
+    private record HttpExchange(int status, String body) {}
 }

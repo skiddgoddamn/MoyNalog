@@ -14,7 +14,7 @@
 
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.1.3</version><!-- таймаут запроса + retry auth + убран HTTP/1.1 -->
+    <version>1.1.4</version><!-- fix: убран JDK Authenticator (глотал 401 от target), Proxy-Authorization шлётся вручную -->
     <packaging>jar</packaging>
 
     <name>MoyNalog Client</name>
@@ -69,6 +69,17 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- HTTP-клиент. Раньше использовался java.net.http.HttpClient (JDK), но его -->
+        <!-- AuthenticationFilter на любой 401 (от proxy или от target) строго требует -->
+        <!-- WWW-Authenticate header и при его отсутствии бросает синтетическое исключение, -->
+        <!-- проглатывая реальное тело ответа. Apache HttpClient5 различает proxy/target -->
+        <!-- через AuthScope и спокойно возвращает 401 от target как обычный response. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <version>5.5</version>
         </dependency>
 
         <!-- Кодогенерация (не попадает в итоговый jar) -->
