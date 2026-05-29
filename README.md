@@ -33,7 +33,7 @@ mvn install
 <dependency>
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.1.4</version>
+    <version>1.1.5</version>
 </dependency>
 ```
 
@@ -163,6 +163,40 @@ future.thenAccept(receipt -> System.out.println("Чек зарегистриро
       .exceptionally(ex -> { System.err.println("Ошибка: " + ex.getMessage()); return null; });
 ```
 
+### Чек с указанием контрагента
+
+```java
+// доход от юрлица/ИП
+Receipt receipt = client.addIncome(
+    List.of(new IncomeItem("Разработка", 1, new BigDecimal("50000.00"))),
+    Counterparty.legalEntity("7700000000", "ООО «Ромашка»")
+);
+```
+
+---
+
+## Аннулирование чека
+
+```java
+client.cancelReceipt(receipt.uuid(), CancelReason.REFUND);          // возврат средств
+client.cancelReceipt(receipt.uuid(), CancelReason.ERROR);           // сформирован ошибочно
+```
+
+---
+
+## История доходов, профиль и налоги
+
+```java
+IncomesPage page = client.getIncomes(new IncomesQuery()
+    .from(OffsetDateTime.now().minusMonths(1))
+    .limit(50));
+page.getContent().forEach(r -> System.out.println(r.getApprovedReceiptUuid() + " — " + r.getTotalAmount()));
+
+AuthenticationDTO.Profile profile = client.getUser();   // актуальный профиль
+TaxInfo tax = client.getTaxes();                        // налог к уплате / задолженность
+String receiptJson = client.getReceiptJson(receipt.uuid());
+```
+
 ---
 
 ## Выставление счёта
@@ -193,6 +227,16 @@ Invoice invoice = client.createInvoice(
 System.out.println("Статус:        " + invoice.getStatus());
 System.out.println("Сумма:         " + invoice.getTotalAmount());
 System.out.println("Ссылка оплаты: " + invoice.getTransitionPageURL());
+```
+
+### Счёт физлицу и отмена
+
+```java
+// физлицу — с телефоном и email вместо ИНН
+Invoice invoice = client.createInvoiceForIndividual(account, "Иван", "79001234567", "ivan@mail.ru", services);
+
+// отмена ранее выставленного счёта
+client.cancelInvoice(invoice.getInvoiceId());
 ```
 
 ---
@@ -288,6 +332,18 @@ try {
 ---
 
 ## Changelog
+
+### 1.1.5
+- **Аннулирование чека**: `cancelReceipt(uuid, CancelReason)` + асинхронный вариант
+- **История доходов**: `getIncomes(IncomesQuery)` с фильтром по периоду и пагинацией
+- **Профиль** и **налоги**: `getUser()`, `getTaxes()`
+- **Отмена счёта**: `cancelInvoice(invoiceId)`; выставление счёта физлицу с телефоном/email — `createInvoiceForIndividual(...)`
+- **Чек по контрагенту**: перегрузка `addIncome(services, Counterparty)` (физлицо/юрлицо/иностранная организация); загрузка JSON чека — `getReceiptJson(uuid)`
+- Суммы `IncomeItem` переведены на `BigDecimal` (точные деньги); конструктор с `double` сохранён для совместимости
+- Надёжность: автоматический повтор запроса с обновлением токена при `401`; обновление токена с запасом 60 сек до истечения; устранена гонка двойного обновления токена
+- `MoyNalogClient` теперь `AutoCloseable` (освобождение пула соединений); в Spring закрывается автоматически
+- Исключения сохраняют первопричину (`cause`)
+- Добавлены тесты на mock HTTP-сервере
 
 ### 1.1.4
 - Переход с JDK `java.net.http.HttpClient` на Apache HttpClient5: его `AuthenticationFilter` на любой `401` (от прокси или от target) требовал заголовок `WWW-Authenticate` и при его отсутствии бросал синтетическое исключение, проглатывая реальное тело ответа

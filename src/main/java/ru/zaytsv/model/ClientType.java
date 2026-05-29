@@ -11,7 +11,10 @@ public enum ClientType {
     FROM_LEGAL_ENTITY("FROM_LEGAL_ENTITY"),
 
     /** Физическое лицо. */
-    FROM_INDIVIDUAL("FROM_INDIVIDUAL");
+    FROM_INDIVIDUAL("FROM_INDIVIDUAL"),
+
+    /** Иностранная организация. */
+    FROM_FOREIGN_AGENCY("FROM_FOREIGN_AGENCY");
 
     private final String value;
 

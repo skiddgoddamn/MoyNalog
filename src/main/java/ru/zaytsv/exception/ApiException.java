@@ -15,4 +15,12 @@ public class ApiException extends RuntimeException {
     public ApiException(String message) {
         super(message);
     }
+
+    /**
+     * @param message описание ошибки
+     * @param cause   первопричина (например, исходное {@link java.io.IOException})
+     */
+    public ApiException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

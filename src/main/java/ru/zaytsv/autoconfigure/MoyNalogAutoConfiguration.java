@@ -34,7 +34,7 @@ public class MoyNalogAutoConfiguration {
      * @param properties настройки, считанные из {@code application.properties}
      * @return готовый к использованию клиент
      */
-    @Bean
+    @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
     public MoyNalogClient moyNalogClient(MoyNalogProperties properties) {
         MoyNalogClientConfig config = new MoyNalogClientConfig();

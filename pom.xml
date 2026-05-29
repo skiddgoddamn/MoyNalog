@@ -14,7 +14,7 @@
 
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.1.4</version><!-- fix: убран JDK Authenticator (глотал 401 от target), Proxy-Authorization шлётся вручную -->
+    <version>1.1.5</version><!-- feat: cancelReceipt/getIncomes/getUser/getTaxes/cancelInvoice, BigDecimal-суммы, авто-retry на 401, AutoCloseable, тесты -->
     <packaging>jar</packaging>
 
     <name>MoyNalog Client</name>
@@ -99,6 +99,14 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Мок HTTP-сервера для тестов клиента -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>mockwebserver</artifactId>
+            <version>4.12.0</version>
             <scope>test</scope>
         </dependency>
 
