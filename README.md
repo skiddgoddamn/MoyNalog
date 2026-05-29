@@ -33,7 +33,7 @@ mvn install
 <dependency>
     <groupId>io.github.skiddgoddamn</groupId>
     <artifactId>moynalog-client</artifactId>
-    <version>1.1.3</version>
+    <version>1.1.4</version>
 </dependency>
 ```
 
@@ -288,6 +288,11 @@ try {
 ---
 
 ## Changelog
+
+### 1.1.4
+- Переход с JDK `java.net.http.HttpClient` на Apache HttpClient5: его `AuthenticationFilter` на любой `401` (от прокси или от target) требовал заголовок `WWW-Authenticate` и при его отсутствии бросал синтетическое исключение, проглатывая реальное тело ответа
+- Убран JDK `Authenticator`, проглатывавший `401` от target; `Proxy-Authorization` теперь отправляется вручную
+- Apache HttpClient5 различает proxy/target через `AuthScope` и корректно возвращает `401` от target как обычный ответ
 
 ### 1.1.3
 - Убрана принудительная фиксация `HTTP/1.1` — клиент теперь автоматически согласует протокол (HTTP/1.1 / HTTP/2) через TLS ALPN
